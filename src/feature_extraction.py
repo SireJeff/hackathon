@@ -1,65 +1,37 @@
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
-from googletrans import Translator
+from hazm import Normalizer, word_tokenize
 import joblib
 import os
-import time
-import re
 
-def load_preprocessed_data(adverts_path, products_path):
-    """Load preprocessed datasets."""
-    adverts_df = pd.read_csv(adverts_path)
-    products_df = pd.read_csv(products_path)
-    return adverts_df, products_df
-
-def clean_text(text):
-    """Remove unwanted patterns or characters from text."""
+# Persian Preprocessing
+def preprocess_persian_text(text):
+    """Normalize and tokenize Persian text."""
     if not isinstance(text, str):
         return ""
-    # Remove JSON-like patterns
-    text = re.sub(r'\[\[.*?\]\]', '', text)
-    # Remove excessive whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    normalizer = Normalizer()
+    text = normalizer.normalize(text)  # Normalize text
+    tokens = word_tokenize(text)  # Tokenize into words
+    return " ".join(tokens)
 
-def translate_text(adverts_df, products_df):
-    """Translate Persian text to English with retry logic."""
-    translator = Translator()
-
-    def safe_translate(text):
-        if not isinstance(text, str) or not text.strip():
-            return ""
-        retries = 3
-        while retries > 0:
-            try:
-                return translator.translate(text, src='fa', dest='en').text
-            except Exception as e:
-                print(f"Translation error for text: {text[:30]}... -> {e}")
-                retries -= 1
-                time.sleep(2)  # Wait before retrying
-        return ""
-
-    # Clean text before translation
-    adverts_df['full_text'] = adverts_df['full_text'].apply(clean_text)
-    products_df['full_text'] = products_df['full_text'].apply(clean_text)
-
-    # Translate text
-    adverts_df['translated_text'] = adverts_df['full_text'].apply(safe_translate)
-    products_df['translated_text'] = products_df['full_text'].apply(safe_translate)
-
+def preprocess_persian_texts(adverts_df, products_df):
+    """Apply Persian text preprocessing to datasets."""
+    adverts_df['processed_text'] = adverts_df['full_text'].apply(preprocess_persian_text)
+    products_df['processed_text'] = products_df['full_text'].apply(preprocess_persian_text)
     return adverts_df, products_df
 
-def vectorize_translated_text(adverts_df, products_df, max_features=5000):
-    """Vectorize translated text data using TF-IDF."""
-    # Extract translated text
-    adverts_text = adverts_df['translated_text'].tolist()
-    products_text = products_df['translated_text'].tolist()
+# TF-IDF Vectorization
+def vectorize_persian_text(adverts_df, products_df, max_features=5000):
+    """Vectorize Persian text data using TF-IDF."""
+    # Extract processed text
+    adverts_text = adverts_df['processed_text'].tolist()
+    products_text = products_df['processed_text'].tolist()
 
     # Combine text for consistent vectorization
     combined_text = adverts_text + products_text
 
     # Initialize the TF-IDF Vectorizer
-    vectorizer = TfidfVectorizer(max_features=max_features, stop_words='english')
+    vectorizer = TfidfVectorizer(max_features=max_features, stop_words='farsi')
 
     # Fit and transform the combined text
     combined_tfidf = vectorizer.fit_transform(combined_text)
@@ -70,13 +42,14 @@ def vectorize_translated_text(adverts_df, products_df, max_features=5000):
 
     return adverts_tfidf, products_tfidf, vectorizer
 
+# Saving Results
 def save_outputs(adverts_df, products_df, adverts_tfidf, products_tfidf, vectorizer, output_dir='outputs/'):
     """Save processed data and TF-IDF outputs."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # Save DataFrames with translations
-    adverts_df.to_csv(f'{output_dir}/adverts_translated.csv', index=False)
-    products_df.to_csv(f'{output_dir}/products_translated.csv', index=False)
+    # Save DataFrames with processed Persian text
+    adverts_df.to_csv(f'{output_dir}/adverts_processed.csv', index=False)
+    products_df.to_csv(f'{output_dir}/products_processed.csv', index=False)
 
     # Save TF-IDF matrices and vectorizer
     joblib.dump(adverts_tfidf, f'{output_dir}/adverts_tfidf.pkl')
@@ -89,13 +62,14 @@ if __name__ == '__main__':
     products_path = 'data/processed/products_preprocessed.csv'
 
     # Load preprocessed data
-    adverts_df, products_df = load_preprocessed_data(adverts_path, products_path)
+    adverts_df = pd.read_csv(adverts_path)
+    products_df = pd.read_csv(products_path)
 
-    # Translate text
-    adverts_df, products_df = translate_text(adverts_df, products_df)
+    # Preprocess Persian text
+    adverts_df, products_df = preprocess_persian_texts(adverts_df, products_df)
 
-    # Vectorize translated text
-    adverts_tfidf, products_tfidf, vectorizer = vectorize_translated_text(adverts_df, products_df)
+    # Vectorize Persian text
+    adverts_tfidf, products_tfidf, vectorizer = vectorize_persian_text(adverts_df, products_df)
 
     # Save outputs
     save_outputs(adverts_df, products_df, adverts_tfidf, products_tfidf, vectorizer)
