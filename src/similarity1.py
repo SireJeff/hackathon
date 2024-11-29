@@ -1,13 +1,12 @@
 import pandas as pd
 import joblib
-import numpy as np
 import faiss  # Use FAISS for Approximate Nearest Neighbors (ANN)
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 import os
 
 def calculate_similarity(adverts_tfidf, products_tfidf, adverts_df, products_df, top_n=5):
-    """Calculate similarity between advertisements and products."""
+    """Calculate similarity between advertisements and products using cosine similarity."""
     # Convert to dense if necessary, but avoid if using FAISS for memory efficiency
     similarity_matrix = cosine_similarity(adverts_tfidf, products_tfidf)
 
@@ -68,17 +67,26 @@ def find_nearest_neighbors_sklearn(adverts_tfidf, products_tfidf, adverts_df, pr
 
     return pd.DataFrame(results)
 
-def save_mappings(mappings_df, output_file='outputs/mappings.csv'):
+def save_mappings(mappings_df, output_file='outputs/adverts_to_products_mappings.csv'):
     """Save mappings to a CSV file."""
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     mappings_df.to_csv(output_file, index=False)
     print(f"Mappings saved to {output_file}")
 
 if __name__ == '__main__':
-    # Load preprocessed data and TF-IDF matrices
-    adverts_df = pd.read_csv('outputs/adverts_processed.csv')
-    products_df = pd.read_csv('outputs/products_processed.csv')
-    adverts_tfidf = joblib.load('outputs/adverts_tfidf.pkl')
-    products_tfidf = joblib.load('outputs/products_tfidf.pkl')
+    # File paths from feature_extraction.py output
+    adverts_path = 'data/processed/adverts_preprocessed.csv'  # Path from feature_extraction.py output
+    products_path = 'data/processed/products_preprocessed.csv'  # Path from feature_extraction.py output
+    tfidf_vectorizer_path = 'outputs/tfidf_vectorizer.pkl'  # Path for saved TF-IDF vectorizer
+
+    # Load preprocessed data and TF-IDF vectorizer
+    adverts_df = pd.read_csv(adverts_path)
+    products_df = pd.read_csv(products_path)
+    tfidf_vectorizer = joblib.load(tfidf_vectorizer_path)
+
+    # Vectorize the processed texts using the saved TF-IDF vectorizer
+    adverts_tfidf = tfidf_vectorizer.transform(adverts_df['processed_text'])
+    products_tfidf = tfidf_vectorizer.transform(products_df['processed_text'])
 
     # Calculate similarities using FAISS (or use sklearn for smaller datasets)
     mappings_df = find_nearest_neighbors_faiss(adverts_tfidf, products_tfidf, adverts_df, products_df, top_n=5)

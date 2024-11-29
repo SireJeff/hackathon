@@ -1,108 +1,92 @@
 import pandas as pd
-import spacy
-from sklearn.feature_extraction.text import TfidfVectorizer
-from joblib import Parallel, delayed
-import os
 import joblib
+import faiss  # Use FAISS for Approximate Nearest Neighbors (ANN)
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
+import os
 
-# Load spaCy Persian model
-nlp = spacy.blank('xx')  # Use multi-language model that includes Persian processing
+def calculate_similarity(adverts_tfidf, products_tfidf, adverts_df, products_df, top_n=5):
+    """Calculate similarity between advertisements and products using cosine similarity."""
+    # Convert to dense if necessary, but avoid if using FAISS for memory efficiency
+    similarity_matrix = cosine_similarity(adverts_tfidf, products_tfidf)
 
-def preprocess_persian_text(text):
-    """Normalize, tokenize, and clean Persian text."""
-    if not isinstance(text, str):
-        return ""
+    results = []
+    for ad_idx, similarities in enumerate(similarity_matrix):
+        top_indices = similarities.argsort()[-top_n:][::-1]
+        for product_idx in top_indices:
+            results.append({
+                "advertisement_id": adverts_df.iloc[ad_idx]["hash_id"],
+                "product_id": products_df.iloc[product_idx]["hash_id"],
+                "similarity_score": similarities[product_idx],
+            })
+
+    return pd.DataFrame(results)
+
+def find_nearest_neighbors_faiss(adverts_tfidf, products_tfidf, adverts_df, products_df, top_n=5):
+    """Find top N nearest neighbors using FAISS for Approximate Nearest Neighbors."""
     
-    # Process text with spaCy
-    doc = nlp(text)
+    # FAISS requires dense format, so we need to convert sparse to dense
+    adverts_dense = adverts_tfidf.toarray()
+    products_dense = products_tfidf.toarray()
     
-    # Tokenize, lemmatize, and remove stopwords and punctuation
-    tokens = [token.lemma_ for token in doc if not token.is_stop and not token.is_punct]
+    # Create FAISS index for Approximate Nearest Neighbor search
+    index = faiss.IndexFlatL2(products_dense.shape[1])  # L2 distance metric (cosine is similar to L2)
+    index.add(products_dense)  # Add product vectors to the index
     
-    return " ".join(tokens)
+    # Search for nearest neighbors for each advert
+    distances, indices = index.search(adverts_dense, top_n)  # Search for the top_n nearest neighbors
 
-def preprocess_persian_texts(adverts_df, products_df, batch_size=1000, n_processes=4):
-    """Apply Persian text preprocessing to datasets in batches with parallelization."""
-    
-    # Using Parallel and delayed to process in parallel across multiple cores
-    def preprocess_batch(batch_texts):
-        return [preprocess_persian_text(text) for text in batch_texts]
-    
-    # Process the advertisements and products texts in batches
-    adverts_batches = [adverts_df['full_text'][i:i+batch_size] for i in range(0, len(adverts_df), batch_size)]
-    products_batches = [products_df['full_text'][i:i+batch_size] for i in range(0, len(products_df), batch_size)]
-    
-    with Parallel(n_jobs=n_processes) as parallel:
-        adverts_processed = parallel(delayed(preprocess_batch)(batch) for batch in adverts_batches)
-        products_processed = parallel(delayed(preprocess_batch)(batch) for batch in products_batches)
+    results = []
+    for ad_idx, product_indices in enumerate(indices):
+        for rank, product_idx in enumerate(product_indices):
+            results.append({
+                "advertisement_id": adverts_df.iloc[ad_idx]["hash_id"],
+                "product_id": products_df.iloc[product_idx]["hash_id"],
+                "rank": rank + 1,
+                "similarity_score": 1 - distances[ad_idx][rank],  # Convert L2 distance to cosine similarity
+            })
 
-    # Flatten the list of lists
-    adverts_df['processed_text'] = [item for sublist in adverts_processed for item in sublist]
-    products_df['processed_text'] = [item for sublist in products_processed for item in sublist]
-    
-    return adverts_df, products_df
+    return pd.DataFrame(results)
 
-# TF-IDF Vectorization with parallelization
-def vectorize_persian_text(adverts_df, products_df, max_features=5000, n_processes=4):
-    """Vectorize Persian text data using TF-IDF with parallelization."""
-    # Extract processed text
-    adverts_text = adverts_df['processed_text'].tolist()
-    products_text = products_df['processed_text'].tolist()
+def find_nearest_neighbors_sklearn(adverts_tfidf, products_tfidf, adverts_df, products_df, top_n=5):
+    """Find top N nearest neighbors using Nearest Neighbors (sklearn)."""
+    nn = NearestNeighbors(n_neighbors=top_n, metric='cosine', algorithm='brute')
+    nn.fit(products_tfidf)
 
-    # Combine text for consistent vectorization
-    combined_text = adverts_text + products_text
+    distances, indices = nn.kneighbors(adverts_tfidf)
 
-    # Initialize the TF-IDF Vectorizer
-    vectorizer = TfidfVectorizer(max_features=max_features, stop_words='english')  # 'farsi' option can be problematic
+    results = []
+    for ad_idx, product_indices in enumerate(indices):
+        for rank, product_idx in enumerate(product_indices):
+            results.append({
+                "advertisement_id": adverts_df.iloc[ad_idx]["hash_id"],
+                "product_id": products_df.iloc[product_idx]["hash_id"],
+                "rank": rank + 1,
+                "similarity_score": 1 - distances[ad_idx][rank],  # Convert to cosine similarity
+            })
 
-    # Parallelize TF-IDF fitting and transforming
-    def fit_transform_batch(batch_texts):
-        return vectorizer.fit_transform(batch_texts)
+    return pd.DataFrame(results)
 
-    # Split the combined text into smaller chunks
-    chunks = [combined_text[i:i + 10000] for i in range(0, len(combined_text), 10000)]
-
-    with Parallel(n_jobs=n_processes) as parallel:
-        tfidf_batches = parallel(delayed(fit_transform_batch)(chunk) for chunk in chunks)
-
-    # Combine all the TF-IDF results
-    from scipy.sparse import vstack
-    combined_tfidf = vstack(tfidf_batches)
-
-    # Split back into individual datasets
-    adverts_tfidf = combined_tfidf[:len(adverts_text)]
-    products_tfidf = combined_tfidf[len(adverts_text):]
-
-    return adverts_tfidf, products_tfidf, vectorizer
-
-# Saving Results
-def save_outputs(adverts_df, products_df, adverts_tfidf, products_tfidf, vectorizer, output_dir='outputs/'):
-    """Save processed data and TF-IDF outputs."""
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Save DataFrames with processed Persian text
-    adverts_df.to_csv(f'{output_dir}/adverts_processed.csv', index=False)
-    products_df.to_csv(f'{output_dir}/products_processed.csv', index=False)
-
-    # Save TF-IDF matrices and vectorizer
-    joblib.dump(adverts_tfidf, f'{output_dir}/adverts_tfidf.pkl')
-    joblib.dump(products_tfidf, f'{output_dir}/products_tfidf.pkl')
-    joblib.dump(vectorizer, f'{output_dir}/tfidf_vectorizer.pkl')
+def save_mappings(mappings_df, output_file='outputs/adverts_to_products_mappings.csv'):
+    """Save mappings to a CSV file."""
+    mappings_df.to_csv(output_file, index=False)
+    print(f"Mappings saved to {output_file}")
 
 if __name__ == '__main__':
-    # File paths
-    adverts_path = 'data/processed/adverts_preprocessed.csv'
-    products_path = 'data/processed/products_preprocessed.csv'
+    # File paths from feature_extraction.py output
+    adverts_path = 'outputs/adverts_processed.csv'  # Path from feature_extraction.py output
+    products_path = 'outputs/products_processed.csv'  # Path from feature_extraction.py output
+    adverts_tfidf_path = 'outputs/adverts_tfidf.pkl'  # Path for TF-IDF matrix
+    products_tfidf_path = 'outputs/products_tfidf.pkl'  # Path for TF-IDF matrix
 
-    # Load preprocessed data
+    # Load preprocessed data and TF-IDF matrices
     adverts_df = pd.read_csv(adverts_path)
     products_df = pd.read_csv(products_path)
+    adverts_tfidf = joblib.load(adverts_tfidf_path)
+    products_tfidf = joblib.load(products_tfidf_path)
 
-    # Preprocess Persian text
-    adverts_df, products_df = preprocess_persian_texts(adverts_df, products_df, batch_size=1000, n_processes=4)
+    # Calculate similarities using FAISS (or use sklearn for smaller datasets)
+    mappings_df = find_nearest_neighbors_faiss(adverts_tfidf, products_tfidf, adverts_df, products_df, top_n=5)
 
-    # Vectorize Persian text
-    adverts_tfidf, products_tfidf, vectorizer = vectorize_persian_text(adverts_df, products_df, max_features=5000, n_processes=4)
-
-    # Save outputs
-    save_outputs(adverts_df, products_df, adverts_tfidf, products_tfidf, vectorizer)
+    # Save results
+    save_mappings(mappings_df)
