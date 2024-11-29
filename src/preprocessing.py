@@ -16,19 +16,19 @@ def preprocess_persian_text(text):
 
     # Normalize text
     text = normalizer.normalize(text)
-
+    #print("finished normalization")
     # Remove non-Persian characters
     text = re.sub(r'[^آ-ی\s]', '', text)
-
+    #print("finished removing non-persian charachters")
     # Tokenize
     tokens = word_tokenize(text)
-
+    #print("finished tokenization")
     # Remove stopwords
     tokens = [word for word in tokens if word not in stopwords]
-
+    #print("stepwords removed")
     # Lemmatize
     tokens = [lemmatizer.lemmatize(word) for word in tokens]
-
+    #print("finished lemmatization")
     return " ".join(tokens)
 
 
@@ -38,14 +38,17 @@ def preprocess_data(adverts_df, products_df):
     adverts_df['advertisement_description'] = adverts_df['advertisement_description'].fillna('')
     products_df['product_description'] = products_df['product_description'].fillna('')
 
+    print("finished filling missed values")
+
     # Combine title and description into one field for easier processing
     adverts_df['full_text'] = adverts_df['advertisement_title'] + ' ' + adverts_df['advertisement_description']
     products_df['full_text'] = products_df['product_title'] + ' ' + products_df['product_description']
-
+    print("finished Combine title ")
     # Apply Persian text preprocessing
     adverts_df['processed_text'] = adverts_df['full_text'].apply(preprocess_persian_text)
     products_df['processed_text'] = products_df['full_text'].apply(preprocess_persian_text)
-
+    print("finished Apply Persian text")
+    
     return adverts_df, products_df
 
 
